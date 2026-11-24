@@ -1,0 +1,8 @@
+name = "piptrail-web"
+pages_build_output_dir = "dist"
+compatibility_date = "2024-11-01"
+[ai]
+binding = "AI"
+[vars]
+FIREBASE_PROJECT_ID = "__FB_PROJECT__"
+ALLOWED_ORIGINS = "https://localhost,capacitor://localhost"

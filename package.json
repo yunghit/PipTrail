@@ -1,0 +1,15 @@
+{
+ "name": "piptrail",
+ "private": true,
+ "workspaces": [
+  "packages/*",
+  "apps/*",
+  "workers/*"
+ ],
+ "scripts": {
+  "dev:web": "npm -w apps/web run dev",
+  "dev:admin": "npm -w apps/admin run dev",
+  "build:web": "npm -w apps/web run build",
+  "build:admin": "npm -w apps/admin run build"
+ }
+}

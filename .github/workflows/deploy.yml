@@ -1,0 +1,70 @@
+name: Deploy
+on:
+  push: { branches: [main] }
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm install
+      - run: npm audit --audit-level=high || true
+      - name: Build web + admin
+        run: npm run build:web && npm run build:admin
+        env:
+          VITE_FB_API_KEY: ${{ secrets.VITE_FB_API_KEY }}
+          VITE_FB_AUTH_DOMAIN: ${{ secrets.VITE_FB_AUTH_DOMAIN }}
+          VITE_FB_PROJECT_ID: ${{ secrets.VITE_FB_PROJECT_ID }}
+          VITE_FB_APP_ID: ${{ secrets.VITE_FB_APP_ID }}
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+          VITE_PUSH_URL: ${{ secrets.VITE_PUSH_URL }}
+      - name: Pin Firebase project in wrangler.toml
+        run: sed -i "s/__FB_PROJECT__/${{ secrets.VITE_FB_PROJECT_ID }}/" apps/web/wrangler.toml
+      - name: Create Pages project piptrail-web if missing
+        uses: cloudflare/wrangler-action@v3
+        continue-on-error: true
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/web
+          command: pages project create piptrail-web --production-branch main
+      - name: Create Pages project piptrail-admin if missing
+        uses: cloudflare/wrangler-action@v3
+        continue-on-error: true
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/web
+          command: pages project create piptrail-admin --production-branch main
+      - name: Deploy web (+ free AI function) to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/web
+          command: pages deploy dist --project-name=piptrail-web
+      - name: Deploy admin to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: apps/admin
+          command: pages deploy dist --project-name=piptrail-admin
+      - name: Pin push worker config
+        run: sed -i "s/__FB_PROJECT__/${{ secrets.VITE_FB_PROJECT_ID }}/; s#__ADMIN_ORIGIN__#${{ secrets.ADMIN_ORIGIN }}#" workers/push/wrangler.toml
+      - name: Deploy push worker (free, FCM broadcast)
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/push
+          command: deploy
+          secrets: FIREBASE_SERVICE_ACCOUNT
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+      - name: Deploy Firestore rules (free Spark plan)
+        run: |
+          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > "$RUNNER_TEMP/sa.json"
+          GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json" npx firebase-tools deploy --only firestore:rules --project "${{ secrets.VITE_FB_PROJECT_ID }}" --non-interactive

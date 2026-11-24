@@ -1,0 +1,47 @@
+name: Android APK
+on:
+  push: { tags: ['v*'] }
+  workflow_dispatch:
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: 17 }
+      - run: npm install
+      - name: Build web bundle
+        run: npm run build:web
+        env:
+          VITE_FB_API_KEY: ${{ secrets.VITE_FB_API_KEY }}
+          VITE_FB_AUTH_DOMAIN: ${{ secrets.VITE_FB_AUTH_DOMAIN }}
+          VITE_FB_PROJECT_ID: ${{ secrets.VITE_FB_PROJECT_ID }}
+          VITE_FB_APP_ID: ${{ secrets.VITE_FB_APP_ID }}
+          VITE_API_BASE: ${{ secrets.VITE_API_BASE }}
+          VITE_ADMOB_BANNER: ${{ secrets.ADMOB_BANNER_ID }}
+      - name: Add Android project, icons, sync
+        working-directory: apps/web
+        run: |
+          [ -d android ] || npx cap add android
+          npx @capacitor/assets generate --android
+          npx cap sync android
+      - name: Push config + permissions
+        run: |
+          echo '${{ secrets.GOOGLE_SERVICES_JSON }}' > apps/web/android/app/google-services.json
+          M=apps/web/android/app/src/main/AndroidManifest.xml
+          for P in POST_NOTIFICATIONS RECEIVE_BOOT_COMPLETED VIBRATE; do grep -q "$P" $M || sed -i "s#</manifest>#    <uses-permission android:name=\"android.permission.$P\" />\n</manifest>#" $M; done
+      - name: Inject AdMob app id (test id until you set ADMOB_APP_ID)
+        run: |
+          M=apps/web/android/app/src/main/AndroidManifest.xml
+          grep -q 'ads.APPLICATION_ID' $M || perl -0pi -e 's#(<application[^>]*>)#$1\n<meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="$ENV{ADMOB_APP_ID}"/>#' $M
+        env:
+          ADMOB_APP_ID: ${{ secrets.ADMOB_APP_ID || 'ca-app-pub-3940256099942544~3347511713' }}
+      - name: Build debug APK
+        working-directory: apps/web/android
+        run: chmod +x gradlew && ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: piptrail-apk
+          path: apps/web/android/app/build/outputs/apk/debug/app-debug.apk

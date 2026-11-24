@@ -1,0 +1,148 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signedIn() { return request.auth != null && request.auth.token.email_verified == true; }
+    function isAdmin() { return signedIn() && exists(/databases/$(db)/documents/admins/$(request.auth.uid)); }
+    function str(v, max) { return v is string && v.size() <= max; }
+    function validTrade(d) {
+      return d.keys().hasOnly(['ts','date','cycle','pair','side','model','tf','slot','pl','lesson','x'])
+        && d.ts is number && str(d.date, 10) && d.cycle is int && str(d.pair, 20)
+        && d.side in ['BUY','SELL'] && d.model in ['CRT','Unicorn','CRT+Unicorn','Other']
+        && str(d.tf, 10) && d.slot in ['B','1A','1B','2A','2B']
+        && d.pl is number && d.pl > -100000 && d.pl < 100000
+        && (!('lesson' in d) || str(d.lesson, 2000)) && (!('x' in d) || d.x is map);
+    }
+    match /users/{uid}/trades/{id} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid && validTrade(request.resource.data);
+      allow update: if signedIn() && request.auth.uid == uid && validTrade(request.resource.data);
+    }
+    match /users/{uid}/lessons/{id} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['title','body','cat','ts'])
+        && str(request.resource.data.title, 120) && str(request.resource.data.body, 4000) && str(request.resource.data.get('cat',''), 40);
+    }
+    match /users/{uid}/meta/acct {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['base','cycle','hist'])
+        && request.resource.data.base is number && request.resource.data.cycle is int && request.resource.data.hist is list && request.resource.data.hist.size() < 1000;
+    }
+    match /users/{uid}/days/{d} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['bias','maxTrades','maxLoss','mood','note','ts','skip'])
+        && str(request.resource.data.bias, 200) && request.resource.data.maxTrades is int && request.resource.data.maxTrades >= 1 && request.resource.data.maxTrades <= 500
+        && request.resource.data.maxLoss is number && request.resource.data.maxLoss >= 0 && request.resource.data.maxLoss < 100000
+        && str(request.resource.data.mood, 20) && str(request.resource.data.note, 500) && request.resource.data.ts is number
+        && (!('skip' in request.resource.data) || request.resource.data.skip is bool);
+    }
+    match /users/{uid}/meta/prefs {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['nick','shareCode','sharing'])
+        && str(request.resource.data.nick, 20) && str(request.resource.data.shareCode, 20) && request.resource.data.sharing is bool;
+    }
+    match /users/{uid}/partners/{code} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['nick','ts']) && str(request.resource.data.nick, 20) && request.resource.data.ts is number;
+    }
+    function validShare(d) {
+      return d.keys().hasOnly(['owner','nick','level','xp','streak','winStreak','winRate','trades','discipline','ts'])
+        && str(d.nick, 20) && d.level is int && d.xp is int && d.streak is int && d.winStreak is int && d.winRate is int && d.trades is int && d.discipline is int && d.ts is number;
+    }
+    // Partner sharing: unguessable 12-char code, read by exact code only (no listing), owner controls/revokes.
+    match /shares/{code} {
+      allow get: if signedIn();
+      allow create: if signedIn() && code.size() >= 12 && request.resource.data.owner == request.auth.uid && validShare(request.resource.data);
+      allow update: if signedIn() && resource.data.owner == request.auth.uid && request.resource.data.owner == request.auth.uid && validShare(request.resource.data);
+      allow delete: if signedIn() && resource.data.owner == request.auth.uid;
+    }
+    match /announcements/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+    // FCM device tokens: owner may register/refresh/delete; only the push Worker (service account) reads them.
+    match /devices/{token} {
+      allow create: if signedIn() && request.resource.data.keys().hasOnly(['uid','ts']) && request.resource.data.uid == request.auth.uid && request.resource.data.ts is number;
+      allow update, delete: if signedIn() && resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid;
+    }
+    match /pro/{uid}      { allow read: if signedIn() && (request.auth.uid == uid || isAdmin()); allow write: if isAdmin(); }
+    match /config/{id}    { allow read: if signedIn(); allow write: if isAdmin(); }
+    // Manual local-payment requests (Orange Money / MyZaka): users create pending requests, admin approves and grants Pro.
+    match /payments/{id} {
+      allow create: if signedIn() && request.resource.data.keys().hasOnly(['uid','ref','note','plan','status','ts'])
+        && request.resource.data.uid == request.auth.uid && request.resource.data.status == 'pending'
+        && str(request.resource.data.note, 60) && str(request.resource.data.ref, 12)
+        && request.resource.data.plan in ['1 month','3 months','12 months'] && request.resource.data.ts is number;
+      allow read, update: if isAdmin();
+    }
+    match /users/{uid}/meta/rules {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid && request.resource.data.keys().hasOnly(['items']) && request.resource.data.items is list && request.resource.data.items.size() <= 10;
+    }
+    match /users/{uid}/meta/setups {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid && request.resource.data.keys().hasOnly(['items']) && request.resource.data.items is list && request.resource.data.items.size() <= 20;
+    }
+    match /users/{uid}/meta/goals {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid && request.resource.data.keys().hasOnly(['weekProfit','monthProfit','minDiscipline'])
+        && request.resource.data.weekProfit is number && request.resource.data.monthProfit is number && request.resource.data.minDiscipline is int
+        && request.resource.data.minDiscipline >= 0 && request.resource.data.minDiscipline <= 100;
+    }
+    match /users/{uid}/groups/{gid} {
+      allow read, delete: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid && request.resource.data.keys().hasOnly(['name','role','ts','detail'])
+        && str(request.resource.data.name, 40) && request.resource.data.role in ['mentor','student'] && request.resource.data.ts is number
+        && (!('detail' in request.resource.data) || request.resource.data.detail is bool);
+    }
+    // ---- Mentor groups: group id IS the secret join code (12 chars, get-by-id only). Creating a group needs active Pro. ----
+    function groupOwner(g) { return signedIn() && get(/databases/$(db)/documents/groups/$(g)).data.owner == request.auth.uid; }
+    function isMemberOf(g) { return signedIn() && exists(/databases/$(db)/documents/groups/$(g)/members/$(request.auth.uid)); }
+    function proNow() { return exists(/databases/$(db)/documents/pro/$(request.auth.uid)) && get(/databases/$(db)/documents/pro/$(request.auth.uid)).data.until > request.time.toMillis(); }
+    function validMember(d) {
+      return d.keys().hasOnly(['nick','level','xp','streak','winRate','discipline','trades','weekTrades','plan','ts'])
+        && str(d.nick, 20) && d.level is int && d.xp is int && d.streak is int && d.winRate is int && d.discipline is int && d.trades is int && d.weekTrades is int && d.plan is bool && d.ts is number;
+    }
+    function validPrivate(d) {
+      return d.keys().hasOnly(['weekPl','monthPl','ddMax','tilt','topMood','lastLesson','ts'])
+        && d.weekPl is number && d.monthPl is number && d.ddMax is number && d.tilt is int && str(d.topMood, 20) && str(d.lastLesson, 300) && d.ts is number;
+    }
+    match /groups/{g} {
+      allow get: if signedIn();
+      allow create: if signedIn() && g.size() >= 12 && request.resource.data.owner == request.auth.uid && proNow()
+        && request.resource.data.keys().hasOnly(['name','owner','nick','ts']) && str(request.resource.data.name, 40) && str(request.resource.data.nick, 20) && request.resource.data.ts is number;
+      allow update: if groupOwner(g) && request.resource.data.owner == request.auth.uid && request.resource.data.keys().hasOnly(['name','owner','nick','ts']) && str(request.resource.data.name, 40);
+      allow delete: if groupOwner(g);
+      match /members/{uid} {
+        allow read: if groupOwner(g) || isMemberOf(g);
+        allow create, update: if signedIn() && request.auth.uid == uid && exists(/databases/$(db)/documents/groups/$(g)) && validMember(request.resource.data);
+        allow delete: if signedIn() && (request.auth.uid == uid || groupOwner(g));
+      }
+      match /private/{uid} {
+        allow read: if signedIn() && (request.auth.uid == uid || groupOwner(g));
+        allow create, update: if signedIn() && request.auth.uid == uid && isMemberOf(g) && validPrivate(request.resource.data);
+        allow delete: if signedIn() && (request.auth.uid == uid || groupOwner(g));
+      }
+      match /posts/{id} {
+        allow read: if groupOwner(g) || isMemberOf(g);
+        allow create, update: if groupOwner(g) && request.resource.data.keys().hasOnly(['text','kind','ts']) && str(request.resource.data.text, 1000) && request.resource.data.kind in ['announcement','assignment'] && request.resource.data.ts is number;
+        allow delete: if groupOwner(g);
+      }
+      match /notes/{uid} {
+        allow read: if signedIn() && (request.auth.uid == uid || groupOwner(g));
+        allow create, update: if groupOwner(g) && request.resource.data.keys().hasOnly(['text','ts']) && str(request.resource.data.text, 1000) && request.resource.data.ts is number;
+        allow delete: if groupOwner(g);
+      }
+    }
+    match /feedback/{id} {
+      allow create: if signedIn() && request.resource.data.keys().hasOnly(['uid','text','ts','app']) && request.resource.data.uid == request.auth.uid
+        && str(request.resource.data.text, 1000) && request.resource.data.text.size() > 0 && str(request.resource.data.app, 10) && request.resource.data.ts is number;
+      allow read, delete: if isAdmin();
+    }
+    match /lessons/{id}   { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /templates/{id} { allow read: if signedIn(); allow write: if isAdmin(); }
+    match /admins/{uid}   { allow read: if signedIn() && request.auth.uid == uid; allow write: if false; }
+    match /{document=**}  { allow read, write: if false; }
+  }
+}
