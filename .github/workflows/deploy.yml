@@ -65,6 +65,10 @@ jobs:
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
       - name: Deploy Firestore rules (free Spark plan)
+        env:
+          SA: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
         run: |
-          echo '${{ secrets.FIREBASE_SERVICE_ACCOUNT }}' > "$RUNNER_TEMP/sa.json"
-          GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json" npx firebase-tools deploy --only firestore:rules --project "${{ secrets.VITE_FB_PROJECT_ID }}" --non-interactive
+          printf '%s' "$SA" > "$RUNNER_TEMP/sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
+          node -e "const j=JSON.parse(require('fs').readFileSync(process.env.GOOGLE_APPLICATION_CREDENTIALS,'utf8'));console.log('Service account:',j.client_email,'| project:',j.project_id)" || { echo "FIREBASE_SERVICE_ACCOUNT secret is empty or is not the full JSON file. Re-create it."; exit 1; }
+          npx firebase-tools deploy --only firestore:rules --project "${{ secrets.VITE_FB_PROJECT_ID }}" --non-interactive
